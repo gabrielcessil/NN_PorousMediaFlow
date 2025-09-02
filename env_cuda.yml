@@ -1,0 +1,24 @@
+name: torch111
+channels:
+  - pytorch
+  - nvidia
+  - defaults
+  - conda-forge
+  - https://repo.anaconda.com/pkgs/main
+  - https://repo.anaconda.com/pkgs/r
+dependencies:
+  - python=3.9
+  - scipy
+  - scikit-learn==1.6.1
+  - numexpr==2.8.7
+  - sympy==1.13.2
+  - matplotlib==3.9.2
+  - seaborn==0.13.2
+  - plotly==5.24.1
+  - pyvista==0.42.0
+  - pillow==10.4.0
+  - psutil==5.9.0
+  - tqdm==4.66.5
+  - scikit-image
+  - torchmetrics=0.6.0
+prefix: /home/gabriel/miniconda3/envs/torch111
