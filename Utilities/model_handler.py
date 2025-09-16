@@ -1,5 +1,7 @@
 import gc
 import torch
+import os
+import datetime
 
 def clear_gpu_memory():
     """Limpa o cache de memória da GPU."""
@@ -29,4 +31,5 @@ def delete_model(model):
     clear_cpu_memory()
 
     print("Modelo PyTorch e memória associada liberados.")
+    
     

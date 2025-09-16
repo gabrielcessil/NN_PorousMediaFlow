@@ -3,17 +3,16 @@
 # ---------------- SLURM Job Settings ----------------
 
 #SBATCH --job-name=RNA_train                # Job name for identification
-#SBATCH --partition=all_gpu                 # Partition (queue) to submit to: 'k40m', 'a100' or 'a30'
+#SBATCH --partition=open_cpu                 # Partition (queue) to submit to: 'k40m', 'a100' or 'a30'
 #SBATCH --nodes=1                           # Number of nodes
-#SBATCH --gres=gpu:a100:1                   # Request 1 a100 from the node
 
 #SBATCH -t 4-0:00                           # Max wall time: 4 days
 #SBATCH --output=output_%j.log
 #SBATCH --error=error_%j.log
 
 
-#SBATCH --mem-per-gpu=64G                  # RAM 64GB per a100.
-#SBATCH --cpus-per-gpu=12                  # 12 Cores per a100
+#SBATCH --cpus-per-task=20          # CPUs for your Python process
+#SBATCH --mem=40G                   # Total RAM for the job
 
 ##SBATCH --oversubscribe  	               # Allow sharing
 

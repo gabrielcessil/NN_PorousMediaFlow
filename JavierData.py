@@ -8,7 +8,7 @@ import Domain_Plotter as plt
 import pyvista as pv
 import numpy.typing as npt
 import re
-
+import copy
 ###############################################################################
 #************************************ DATASET INFOS **************************#
 # Dataset:
@@ -19,7 +19,7 @@ import re
 
 
 
-def save_velocity_field_vti(ux, uy, uz, filename="velocity", spacing=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0)):
+def save_velocity_field_vti(dist, ux, uy, uz, filename="velocity", spacing=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0)):
     """
     Save a 3D velocity field (ux, uy, uz) as a ParaView-readable .vti file.
 
@@ -28,7 +28,7 @@ def save_velocity_field_vti(ux, uy, uz, filename="velocity", spacing=(1.0, 1.0, 
     ux, uy, uz : np.ndarray
         3D arrays of the velocity components. Shape should be (Nz, Ny, Nx).
     filename : str
-        Output file name (default: "velocity.vti").
+        target file name (default: "velocity.vti").
     spacing : tuple of float
         Grid spacing along (dx, dy, dz). Default is (1, 1, 1).
     origin : tuple of float
@@ -53,59 +53,22 @@ def save_velocity_field_vti(ux, uy, uz, filename="velocity", spacing=(1.0, 1.0, 
     
     # 5. Attach the velocity data
     # The 'velocity' field is a vector field and must have 3 components per point.
-    grid.point_data["velocity"]   = velocity_vector_field
-    
-    # 6. Attach the individual velocity components as scalar fields
-    # These should be 1D arrays, not reshaped to (-1, 1).
-    grid.point_data["velocity_x"] = ux.ravel()
-    grid.point_data["velocity_y"] = uy.ravel()
-    grid.point_data["velocity_z"] = uz.ravel()
-
-    # 7. Optionally add velocity magnitude
-    grid.point_data["velocity_magnitude"] = np.linalg.norm(velocity_vector_field, axis=1)
+    grid.point_data["Velocity"]             = velocity_vector_field
+    grid.point_data["Velocity_x"]           = ux.ravel()
+    grid.point_data["Velocity_y"]           = uy.ravel()
+    grid.point_data["Velocity_z"]           = uz.ravel()
+    grid.point_data["SignDist"]             = dist.ravel()
+    grid.point_data["Velocity_magnitude"]   = np.linalg.norm(velocity_vector_field, axis=1)
     
     # 5. Attach the solid data, ensuring it's a scalar array
     # The original 'uz_c == 0' logic works, but let's stick to the C-order convention.
-    solid_data = (uz == 0).astype(np.uint8)
+    solid_data = (dist > 0).astype(np.uint8)
     grid.point_data["solid"] = solid_data.ravel(order='C')
     
     # 6. Save the grid to a single .vti file
     grid.save(f"{filename}.vti")
     print(f"Successfully saved {filename}.vti with velocity and solid data.")
 
-
-def create_raw_file(data: npt.NDArray, filename: str, reflect_z: bool = False, make_wall: bool = False):
-    """
-    Saves a NumPy array to a raw binary file, with an option to reflect along the z-axis.
-
-    Args:
-        data (npt.NDArray): The NumPy array to save.
-        filename (str): The full path and filename for the output .raw file.
-        reflect_z (bool): If True, reflects the data along the z-axis before saving.
-    """
-    try:
-        # Reflect the data along the z-axis if requested
-        if reflect_z:
-            flipped = np.flip(data, axis=2)
-            data = np.concatenate([data, flipped], axis=2)  # (N, N, 2N)
-            
-        
-        if make_wall:
-            # x-min / x-max walls
-            data[0, :, :]  = 0
-            data[-1, :, :] = 0
-            # y-min / y-max walls
-            data[:, 0, :]  = 0
-            data[:, -1, :] = 0
-                        
-        # Open the file in binary write mode
-        with open(filename+".raw", 'wb') as f:
-            # Write the raw binary data of the array to the file
-            data.tofile(f)
-        print(f"Successfully saved raw data to: {filename}")
-        
-    except Exception as e:
-        print(f"Error saving raw file: {e}")
             
 from torch.utils.data import Dataset
 class Lazy_RockDataset(Dataset):
@@ -133,7 +96,6 @@ class Lazy_RockDataset(Dataset):
         match = pattern.search(simu_filename)
         if match:
             value = int(match.group(1))  # pega só o número
-            print(simu_filename, "→", value)
         
         try:
             rock_dist_trans, velocity_target = self.get_SamplePair(rock_filename, simu_filename, value)
@@ -154,44 +116,93 @@ class Lazy_RockDataset(Dataset):
         
     def get_SamplePair(self, rock_filename, simu_filename, pressure):
          
-        with h5py.File(rock_filename, 'r') as f: rock_input = f["bin"][()]   
+        with h5py.File(rock_filename, 'r') as f: rock_bin = f["bin"][()] # shape (z,y,z)
             
         # Rotation needed in the dataset provided
-        if not np.isin(rock_input, [0, 1]).all(): raise Exception("Rock file must be binary int.")
-        rock_input          = 1-rock_input 
-        rock_input          = rock_input.transpose(2, 1, 0)
-        rock_dist_trans     = distance_transform_edt(rock_input == 1.0)
+        if not np.isin(rock_bin, [0, 1]).all(): raise Exception("Rock file must be binary int.")
+        rock_bin          = 1-rock_bin                                                          # Revert convertion to 0-solid, 1-fluid
+        rock_bin          = rock_bin.transpose(2, 1, 0)                                         
+        rock_dist_trans     = distance_transform_edt(rock_bin == 1.0)                             
         
-        simu_data           = loadmat(simu_filename)
-        example_output_ux   = simu_data["ux"][()]*self.conv_factors[pressure]
-        example_output_uy   = simu_data["uy"][()]*self.conv_factors[pressure]
-        example_output_uz   = simu_data["uz"][()]*self.conv_factors[pressure]
+        simu_data           = loadmat(simu_filename)                                                # Field alligned with i (z,y,x)
+
+        # (ORIGINAL FORM)
+        example_target_ux   = simu_data["ux"][()] *self.conv_factors[pressure] 
+        example_target_uy   = simu_data["uy"][()] *self.conv_factors[pressure]
+        example_target_uz   = simu_data["uz"][()] *self.conv_factors[pressure]
         
-        if not self.sanity_check(rock_input, example_output_uz, solid_default_value=0.0): 
+
+        #example_target_ux   = simu_data["ux"][()] 
+        #example_target_uy   = simu_data["uy"][()] 
+        #example_target_uz   = simu_data["uz"][()] 
+        
+        
+        if not self.sanity_check(rock_bin, example_target_uz, solid_default_value=0.0): 
             raise Exception(f"Sanity check: Target and Rock domains do not match in solid cells: {rock_filename} and {simu_filename}")
     
-        # Normalization
+        # NORMALIZATION (ORIGINAL FORM)
         rock_dist_trans     = rock_dist_trans
-        example_output_ux   = example_output_ux/1e-9
-        example_output_uy   = example_output_uy/1e-9
-        example_output_uz   = example_output_uz/1e-9
+        example_target_ux   = example_target_ux/1e-9
+        example_target_uy   = example_target_uy/1e-9
+        example_target_uz   = example_target_uz/1e-9
+        
+        #rock_dist_trans     = rock_dist_trans/100
+        #example_target_ux   = example_target_ux/1e-6
+        #example_target_uy   = example_target_uy/1e-6
+        #example_target_uz   = example_target_uz/1e-6
+        
+        # SWAP X AND Z AXIS of each scalar field
+        rock_bin            = np.rot90(rock_bin, axes=(0, 2))  
+        rock_bin            = np.flip(rock_bin, axis=0)
+        rock_dist_trans     = np.rot90(rock_dist_trans, axes=(0, 2))  
+        rock_dist_trans     = np.flip(rock_dist_trans, axis=0)
+        example_target_ux   = np.rot90(example_target_ux, axes=(0, 2))
+        example_target_ux   = np.flip(example_target_ux, axis=0)
+        example_target_uy   = np.rot90(example_target_uy, axes=(0, 2))
+        example_target_uy   = np.flip(example_target_uy, axis=0)
+        example_target_uz   = np.rot90(example_target_uz, axes=(0, 2))
+        example_target_uz   = np.flip(example_target_uz, axis=0)
+        
+        #plt.Plot_Domain((rock_dist_trans!=0).astype(int), "input_0", remove_value=[1])
+        #plt.Plot_Domain((example_target_uz!=0).astype(int),"target_0", remove_value=[1])
         
         # Visualize
-        #"""
         vti_filename = rock_filename.removesuffix('.mat')
-        save_velocity_field_vti(example_output_ux, 
-                                example_output_uy, 
-                                example_output_uz, 
-                                filename=vti_filename+f"_{pressure}", 
-                                spacing=(1.0, 1.0, 1.0), 
-                                origin=(0.0, 0.0, 0.0))
-        #"""
-        #"""
+        save_velocity_field_vti(                                                
+            rock_dist_trans,
+            example_target_ux,    
+            example_target_uy,  
+            example_target_uz,
+            filename=vti_filename+f"_{pressure}", 
+            spacing=(1.0, 1.0, 1.0), 
+            origin=(0.0, 0.0, 0.0))
+       
+        # Make raw
         raw_filename    = rock_filename.removesuffix('.mat')
-        input_array     = ~(example_output_uz==0)
-        create_raw_file(data= input_array.astype(np.uint8), filename= raw_filename, reflect_z=True, make_wall=True)
-        #"""
-        return rock_dist_trans, example_output_uz
+        data            = rock_bin.astype(np.uint8)
+        with open(raw_filename+".raw", 'wb') as f:
+            # Write the raw binary data of the array to the file
+            data.tofile(f)
+        print(f"Successfully saved raws with shape {data.shape} data as: {raw_filename}")
+
+        # Make flipped and walled raw
+        # For periodic simulation: reflect the data along the z-axis if requested
+        raw_filename    = raw_filename+"_flipped"
+        flipped         = np.flip(data, axis=0)
+        data            = np.concatenate([data, flipped], axis=0)
+        # Make walls in bounder YZ and XZ planes
+        data[:, :, 0]   = 0
+        data[:, :, -1]  = 0
+        data[:, 0, :]   = 0
+        data[:, -1, :]  = 0
+        # Open the file in binary write mode
+        with open(raw_filename+".raw", 'wb') as f:
+            # Write the raw binary data of the array to the file
+            data.tofile(f)
+            
+        print(f"Successfully saved raws with shape {data.shape} data as: {raw_filename}")
+        
+        return rock_dist_trans, example_target_uz
     
     
     # Some downloads ended uo in the folder, others in a folder with same name

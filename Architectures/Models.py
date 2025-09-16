@@ -101,159 +101,186 @@ The original code is present in :
 The original code to generate each individual conv model was modified from:
     https://github.com/tamarott/SinGAN
 """
+
 class MS_Net(nn.Module):
     
     def __init__(
-            self, 
-            net_name='test1', 
-            num_scales=4, 
-            num_features=1, 
-            num_filters=2, 
-            f_mult=4, 
-            device='cpu', 
-            
-            summary=False):
+                 self, 
+                 net_name     = 'test1', 
+                 num_scales   =  4,
+                 num_features =  1, 
+                 num_filters  =  2, 
+                 f_mult       =  4,  
+                 summary      = False
+                 ):
         
-        super().__init__()
+        super(MS_Net, self).__init__()
         
         self.net_name = net_name
-        self.scales = num_scales
-        self.feats = num_features
-        self.device = device
-    
+        self.scales   = num_scales
+        self.feats    = num_features
         
-        # Define number of filters 
-        nc_in = num_features # Incremental number of filters
-        last_act = None
-        num_filters_list = [num_filters * f_mult ** scale for scale in range(num_scales)][::-1]
-        
-        
-        self.submodels = nn.ModuleList()
-        for it in range(num_scales):
-            # After the coarsenest scale: network receives original inputs 
-            # and previous prediction additional channel
-            if it == 1: nc_in += 1 
-            
-            self.submodels.append(
-                MS_Net.SubModel(nc_in, num_filters_list[it], last_act)
-                )
-    
+        self.models   = nn.ModuleList( 
+                                MS_Net.get_SubModels( 
+                                    num_scales,
+                                    num_features,
+                                    num_filters,
+                                    f_mult ) 
+                                )
         if summary:
-            print(f'\n Here is a summary of your MS-Net ({net_name}): \n {self.submodels}')
-
-    class ConvBlock3D(nn.Sequential):
-        def __init__(self, in_channel, out_channel, ker_size, padd, stride, norm, activ):
-            super().__init__()
-            self.add_module('conv', nn.Conv3d(in_channel, out_channel, kernel_size=ker_size, stride=stride, padding=padd))
-            if norm:
-                self.add_module('i_norm', nn.InstanceNorm3d(out_channel))
-            if activ:
-                self.add_module('CeLU', nn.CELU(alpha=2,inplace=False))
-
-    class SubModel(nn.Module):
-        def __init__(self, nc_in, ncf, last_act):
-            super().__init__()
-            # Submodel fixed parameters
-            nc_out      = 1 # NUmber of output channels (1 for z-vel. only, 3 for xyz velocities)
-            ker_size    = 3 # Paper arguments that Kernel=3 is the most efficient on hardware
-            padd_size   = 1
-            stride      = 1
-            ncf_min     = ncf
-            num_layers  = 5 # Number of serial Convolutions
-                
-            # Define head
-            self.head = MS_Net.ConvBlock3D(nc_in, ncf, ker_size, padd_size, stride, norm=True, activ=True)
+            print(f'\n Here is a summary of your MS-Net ({net_name}): \n {self.models}')
+        
+    @staticmethod
+    def get_SubModels(scales, features, filters, f_mult):
+        
+        """
+        Returns an array with n-trainable models (ConvNets)
+        """
+        
+        models   = []         # empty list to store the models
+        nc_in    = features   # number of inputs on the first layer
+        norm     = True       # use Norm
+        last_act = None       # activation function
+        
+        # list of number filters in each model (scale)
+        num_filters = [ filters*f_mult**scale for scale in range(scales) ][::-1]
+       
+        for it in range( scales ): # creates a model for each scale
+            if it==1: nc_in+=1     # adds an additional input to the subsecuent models 
+                                   # to convolve the domain + previous(upscaled) result 
+            models.append( MS_Net.Scale_SubModel( nc_in    = nc_in,
+                                      ncf      = num_filters[it],
+                                      norm     = norm,
+                                      last_act = last_act) )
+        return models  
+    
+    def get_Masks(self, x, scales):
+        """
+        x: euclidean distance 3D array at the finest scale
+        Returns array with masks
+        
+        Notes:
+            for n scales we need n masks (the last one is binary)
+        """    
+        masks    = [None]*(scales)
+        pooled   = [None]*(scales)
+        
+        pooled[0] = (x>0).float() # 0s at the solids, 1s at the empty space
+        masks[0]  = pooled[0].squeeze(0)
+        
+        for scale in range(1,scales):
+            pooled[scale] = nn.AvgPool3d(kernel_size = 2)(pooled[scale-1])
+            denom = pooled[scale].clone()   # calculate the denominator for the mask
+            denom[denom==0] = 1e8  # regularize to avoid divide by zero
+            for ax in range(2,5):   # repeat along 3 axis
+                denom=denom.repeat_interleave( repeats=2, axis=ax ) # Upscale
+            # Calculate the mask as Mask = Image / Upscale( Downscale(Img) )
+            masks[ scale ] = torch.div( pooled[scale-1], denom ).squeeze(0) 
+        return masks[::-1] # returns a list with masks. smallest size first
+    
+    
+    def forward(self, x_list):
+        # The coarsest network receives only the domain representation 
+        # at the coarsest scale, while the subsequent ones receive two
+        # the domain representation at the appropriate scale, 
+        # and the prediction from the previous scale. 
+        # As mentioned above, the input’s linear size is reduced by 
+        # a factor of two between every scale.
+        # x_list is the sample's input, a list of coarsened versions of an image
+        
+        masks   = self.get_Masks( (x_list[-1]>0).float(), self.scales)
+        
+        assert x_list[0].shape[1] == self.feats, \
+        f'The number of features provided {x_list[0].shape[1]} \
+            does not match with the input size {self.feats}'
             
-            # Define body
-            print("Number of filters: ", ncf)
+        # Carry-out the first prediction (pass through the coarsest model)
+        y = [ self.models[0]( x_list[0] ) ]
+        for scale,[ model,x ] in enumerate(zip( self.models[1:],x_list[1:] )):
+            y_up = self.scale_tensor( y[scale], scale_factor=2 )*masks[scale]
+            y.append( model( torch.cat((x,y_up),dim=1) ) + y_up )
+            
+        return y
+    
+    def scale_tensor(self, x, scale_factor=1):
+        
+        if scale_factor<1:
+            return nn.AvgPool3d(kernel_size = int(1/scale_factor))(x)
+        elif scale_factor>1:
+            for repeat in range (0, int(np.log2(scale_factor)) ):  # number of repeatsx2
+                for ax in range(2,5): # (B,C,  H,W,D), repeat only the 3D axis, not batch and channel
+                    x=x.repeat_interleave(repeats=2, axis=ax)
+            return x
+        elif scale_factor==1:
+            return x
+        
+        else: raise ValueError(f"Scale factor not understood: {scale_factor}")
+        
+    class ConvBlock3D( nn.Sequential ):
+        def __init__(self, in_channel, out_channel, ker_size, padd, stride, norm):
+            super().__init__()
+            self.add_module( 'conv',
+                             nn.Conv3d( in_channel, 
+                                        out_channel,
+                                        kernel_size=ker_size,
+                                        stride=stride,
+                                        padding=padd ) ),
+            if norm == True:
+                self.add_module( 'i_norm', nn.InstanceNorm3d( out_channel ) ),
+            self.add_module( 'CeLU', nn.CELU( inplace=False ) )
+
+    class Scale_SubModel(nn.Module):
+        def __init__(self, nc_in, ncf, norm, last_act):
+            super().__init__()
+            
+            # default parameters
+            nc_out     = 1   # number of output channels of the last layer
+            ker_size   = 3   # kernel side-lenght
+            padd_size  = 1   # padding size
+            ncf_min    = ncf # min number of convolutional filters
+            num_layers = 5   # number of conv layers
+            
+            # first block
+            self.head = MS_Net.ConvBlock3D( 
+                in_channel  = nc_in,
+                out_channel = ncf,
+                ker_size    = ker_size,
+                padd        = padd_size,
+                stride      = 1,
+                norm        = norm )
+            
+            # body of the model
             self.body = nn.Sequential()
-            for i in range(num_layers - 1): # Create each convolution (not counting head convolution)
-                # Define the number of filters
-                new_ncf = int(ncf /  (2 ** (i + 1))) 
-                # Descrease the number of filters in each operation: 2*New_ncf -> New_ncf
-                in_channel = max(2 * new_ncf, ncf_min) 
-                out_channel = max(new_ncf, ncf_min) 
-                print("new_ncf: ", new_ncf, ", in_channel: ",in_channel,", out_channel:", out_channel)
+            for i in range( num_layers-1 ):
+                new_ncf = int( ncf/2**(i+1) )
+                if i==num_layers-2: norm=False  # no norm in the penultimate block
+              
+                convblock = MS_Net.ConvBlock3D( 
+                    in_channel  = max(2*new_ncf,ncf_min),
+                    out_channel = max(new_ncf,ncf_min),
+                    ker_size    = ker_size,
+                    padd        = padd_size,
+                    stride      = 1,
+                    norm        = norm)
                 
-                if i == num_layers - 2: # No Activation in last block
-                    convblock = MS_Net.ConvBlock3D(in_channel, out_channel, ker_size, padd_size, stride, norm=True, activ=False)
-                else:
-                    convblock = MS_Net.ConvBlock3D(in_channel, out_channel, ker_size, padd_size, stride, norm=True, activ=True)
-
-                self.body.add_module(f'block{i + 1}', convblock)
-            print()
+                self.body.add_module( f'block{i+1}', convblock )
             
-            # Define tail: unitary kernel, no normalization and no activation
-            self.tail = nn.Sequential()            
-            self.tail.add_module("tail conv", MS_Net.ConvBlock3D(max(new_ncf, ncf_min), nc_out, ker_size=1, padd_size=0, stride=1, norm=False, activ=False))
-            
-                         
-            
-        def forward(self, x):
+            if last_act == 'CELU':
+                self.tail = nn.Sequential(
+                                        nn.Conv3d( max(new_ncf,ncf_min), nc_out,
+                                                   kernel_size=1,stride=1, padding=0),
+                                        nn.CELU()
+                                     )
+            else:
+                self.tail = nn.Sequential(
+                                nn.Conv3d( max(new_ncf,ncf_min), nc_out, kernel_size=1,
+                                           stride=1, padding=0)) # no pad needed since 1x1x1
+                
+        def forward(self,x):
             x = self.head(x)
             x = self.body(x)
             x = self.tail(x)
             return x
-
-    
-    def forward(self, x_list):
-        # Create masks based on less coarsed image
-        masks = MS_Net.get_masks((x_list[-1] > 0).float(), self.scales)
-        
-        assert x_list[0].shape[1] == self.feats, \
-            f'The number of features provided {x_list[0].shape[1]} does not match with the input size {self.feats}'
-        
-        # Initialize outputs 
-        y = []
-        for scale, (submodel, inputs) in enumerate(zip(self.submodels, x_list)):
-            # If it is the coarsenest scale: there is no previous prediction
-            if scale == 0:
-                y_out = submodel(inputs)
-            # Upscale previous prediction, then apply mask on it
-            else:
-                y_prev = y[-1] # Collect previous prediction 
-                y_up = MS_Net.scale_tensor(y_prev, scale_factor=2) * masks[scale] # Upscale and mask
-                inputs = torch.cat((inputs, y_up), dim=1) # Make input as coarsened rock and previous prediction
-                y_out = submodel(inputs) + y_up # Consider the model output as the actual + previous predictions
-            y.append(y_out)
-
-        return y
-    
-    # Network tools 
-    @staticmethod
-    def scale_tensor(x, scale_factor=1):
-        if scale_factor < 1:
-            return nn.AvgPool3d(kernel_size=int(1 / scale_factor))(x)
-        elif scale_factor > 1:
-            for _ in range(int(np.log2(scale_factor))):
-                for ax in range(2, 5):
-                    x = x.repeat_interleave(repeats=2, axis=ax)
-            return x
-        elif scale_factor == 1:
-            return x
-        else:
-            raise ValueError(f"Scale factor not understood: {scale_factor}")
-    
-    @staticmethod
-    def get_masks(x, scales):
-        masks = [None] * scales
-        pooled = [None] * scales
-    
-        pooled[0] = (x > 0).float()
-        masks[0] = pooled[0].squeeze(0)
-    
-        for scale in range(1, scales):
-            pooled[scale] = nn.AvgPool3d(kernel_size=2)(pooled[scale - 1])
-            denom = pooled[scale].clone()
-            denom[denom == 0] = 1e8
-            for ax in range(2, 5):
-                denom = denom.repeat_interleave(repeats=2, axis=ax)
-            masks[scale] = torch.div(pooled[scale - 1], denom).squeeze(0)
-    
-        return masks[::-1]
-        
-                
-
 
 
 

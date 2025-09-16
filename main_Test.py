@@ -15,22 +15,23 @@ from Utilities import dataset_reader as dr
 #************ INPUTS                ******************#
 #######################################################
 
-#model_name          = "Model_Javier_Data_JavierSpherePacks_LowerValidationLoss.pth" # The desiresd model name, avoid overwritting previous models
-model_name          = "Model_Javier_Data_JavierSpherePacks_ProgressTracking_33__GPU_29082025.pth"
-dataset_name        = "JavierSantos_FinneySpherePack.pt"
-device              = 'cpu'
+NN_results              = "../NN_Results/"
+#NN_model_weights_folder = "NN_Trainning_12_September_2025_07:46AM/NN_Model_Weights/"
+#NN_model_weights_folder = "NN_Trainning_12_September_2025_06:59PM/NN_Model_Weights/"
+NN_model_weights_folder = "NN_Trainning_16_September_2025_11:05AM/NN_Model_Weights/"
+
+model_name              = "Simple_Test_myCPU_SDG_ProgressTracking_50.pth"
+
+NN_dataset_folder       = "../NN_Datasets/"
+dataset_name            = "JavierSantos_FinneySpherePack_11092025_1Pressure.pt"
+examples_shape          = [256, 256, 256]
+device                  = 'cpu'
 
 #######################################################
 #************ LOADING CONFIGS       ******************#
 #######################################################
-# LOADING CONFIGS
-with open("config.json" , "r") as json_file:
-    config_loaded = json.load(json_file)
-examples_shape          = config_loaded["Rock_shape"]
-NN_dataset_folder       = config_loaded["NN_dataset_folder"]
-NN_model_weights_folder = config_loaded["NN_model_weights_folder"]
-NN_results              = config_loaded["NN_results"]
-model_full_name         = NN_model_weights_folder+model_name
+model_path              = NN_results+NN_model_weights_folder
+model_full_name         = model_path+model_name
 dataset_full_name       = NN_dataset_folder+dataset_name
 
 #######################################################
@@ -45,7 +46,6 @@ model = MS_Net(
 model.load_state_dict(torch.load(model_full_name, map_location=torch.device(device)))
 model.eval()
 
-
 #######################################################
 #************ LOADING ROCK EXAMPLE *******************#
 #######################################################
@@ -54,7 +54,7 @@ scaled_data = torch.load(dataset_full_name,  weights_only=False, map_location=to
 dataloader  = dr.MultiScaleDataset.get_dataloader(scaled_data, batch_size=1)
 del scaled_data
 
-outputs, loader = lc.compute_loader_outputs(model, dataloader.loader, N_Samples=10)
+outputs, loader = lc.compute_loader_outputs(model, dataloader.loader)
 
 
 #######################################################
@@ -63,15 +63,14 @@ outputs, loader = lc.compute_loader_outputs(model, dataloader.loader, N_Samples=
         
 #*********** ONE EXAMPLE SAMPLE ANALYSIS *************#
 # Select sample to be analyzed: first sample
-ra.analyze_domain_sample_data(loader, outputs)
+ra.analyze_input_target_output_domain(loader, outputs, model_path)
 
 #*********** PERFORMANCE OF EACH SAMPLE *************#
-ra.analyze_domain_error(loader, outputs)
+#ra.analyze_domain_error(loader, outputs, model_path)
 
 #*********** STATISTICAL PERFOMANCE      *************#
-#ra.analyze_population(loader, outputs)
+#ra.analyze_population_distributions(loader, outputs, model_path)
 
-#ra.sanity_check(loader, outputs)
 
 del outputs
 del dataloader

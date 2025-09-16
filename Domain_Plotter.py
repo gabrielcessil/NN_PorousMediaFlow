@@ -15,6 +15,7 @@ import os
 import pyvista as pv
 import numpy as np
 from matplotlib.patches import Patch
+from scipy.stats import gaussian_kde
 
 
 def Plot_Streamlines(u, v, w, domain, filename, mask=None, seed_stride=4, max_time=1000.0, use_tubes=False):
@@ -861,111 +862,303 @@ import matplotlib.colors as mcolors
 from scipy.stats import mode
 from matplotlib.ticker import AutoMinorLocator
 
-def plot_distributions(dict_data, normalize=False, title="Distribution Comparison", save_path="plot.svg"):
+def plot_distributions(dict_data, normalize=False, title="Distribution Comparison", save_path="plot.svg", pallete="husl"):
     """
-    Compare distributions of multiple arrays from a dictionary.
+    Compare distributions of multiple arrays using histograms with a uniform number of bins.
     
     Args:
-        dict_data (dict): Dictionary of {name: array} pairs
-        normalize (bool): Whether to normalize densities independently
-        title (str): Plot title
+        dict_data (dict): Dictionary of {name: array} pairs to plot.
+        normalize (bool, optional): If True, normalizes the histograms to a probability
+                                    density. Defaults to False.
+        title (str, optional): The title for the plot. Defaults to "Distribution Comparison".
+        save_path (str, optional): The path to save the plot. Defaults to "plot.png".
     """
-    plt.figure(figsize=(12, 7))
-    ax = plt.gca()  # Get the current axes
-    base_colors = list(mcolors.BASE_COLORS.keys())
+    sns.set_style("whitegrid")
+    fig, ax = plt.subplots(figsize=(12, 7))
+    palette = sns.color_palette(pallete, n_colors=len(dict_data))
+    all_data = []
+
+    # Flatten and collect all data into a single array
+    for array in dict_data.values():
+        all_data.append(np.array(array).flatten())
+
+    if not all_data:
+        print("Error: dict_data is empty or contains no valid arrays.")
+        return
+        
+    all_data_concatenated = np.concatenate(all_data)
     
-    for i, (name, array) in enumerate(dict_data.items()):
-        array = array.flatten()
+    # Calculate the number of bins based on all data using the Freedman-Diaconis rule
+    bins = np.histogram_bin_edges(all_data_concatenated, bins='fd')
+
+    # Iterate through the data and plot histograms with the calculated bins
+    for (name, array), color in zip(dict_data.items(), palette):
+        array = np.array(array).flatten()
+        if array.size == 0:
+            print(f"Warning: '{name}' array is empty. Skipping.")
+            continue
+        
+        # Calculate statistics for the legend
         mean = np.mean(array)
         std = np.std(array)
         
-        # Calculate the mode
-        try:
-            moda = mode(array)[0]
-        except TypeError:
-            # Handle cases where the array might be empty or other issues
-            moda = np.nan
-            
-        sns.kdeplot(
-            array, 
-            label=f'{name} (μ={mean:.4f}, σ={std:.4f}, moda={moda:.4f})',
-            color=base_colors[i % len(base_colors)],
-            fill=True, 
-            common_norm=not normalize
+        # Plot the histogram with the uniform bin edges
+        sns.histplot(
+            x=array,
+            ax=ax,
+            label=f'{name} (μ={mean:.4f}, σ={std:.4f}',
+            color=color,
+            alpha=0.6,
+            stat='probability' if normalize else 'count',
+            bins=bins,
+            kde=False,
+            element='step'
+        )
+
+    # Final plot styling
+    min_val = np.percentile(all_data_concatenated, 0.1)
+    max_val = np.percentile(all_data_concatenated, 99.9)
+    ax.set_xlim(min_val, max_val)
+
+    ax.set_xlabel('Value', fontsize=14)
+    ax.set_ylabel('Density' if normalize else 'Count', fontsize=14)
+    ax.set_title(title, fontsize=16)
+
+    ax.tick_params(axis='x', labelsize=12)
+    ax.tick_params(axis='y', labelsize=12)
+
+    ax.legend(fontsize=12, loc='best')
+    ax.grid(which='major', linestyle='-', linewidth=0.75, alpha=0.7)
+    ax.grid(which='minor', linestyle='--', linewidth=0.5, alpha=0.5)
+
+    ax.xaxis.set_minor_locator(AutoMinorLocator(n=5))
+    ax.yaxis.set_minor_locator(AutoMinorLocator(n=5))
+    
+    os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
+    plt.savefig(save_path, bbox_inches='tight')
+    plt.show()
+
+
+
+    
+def plot_scatter_sampled(xdata, ydata, npoints=5000, xlabel="xdata", ylabel="ydata", title="Scatter Plot", simetric=True,  save_path = None):
+    """
+    Creates a 2D scatter plot with density coloring using a random sample of points.
+    This method is suitable when you want a scatter plot but the full dataset is too large.
+
+    Args:
+        xdata (np.ndarray): A NumPy array of xdata values.
+        ydata (np.ndarray): A NumPy array of ydata values.
+        npoints (int): The number of random points to sample for the plot.
+        save_path (Optional[str]): The path to save the plot file (e.g., 'my_plot.png').
+                                   If None, the plot will be displayed on screen.
+    """
+    # --- 1. Flatten the Arrays ---
+    x_flat = xdata.flatten()
+    y_flat = ydata.flatten()
+
+    # --- 2. Randomly Sample the Points ---
+    # Use a fixed random seed for reproducibility.
+    np.random.seed(42)
+    total_points = len(x_flat)
+    if npoints >= total_points:
+        print(f"Sample size ({npoints}) is greater than or equal to total points ({total_points}). Plotting all points.")
+        sample_indices = np.arange(total_points)
+    else:
+        sample_indices = np.random.choice(total_points, size=npoints, replace=False)
+
+    x_sample = x_flat[sample_indices]
+    y_sample = y_flat[sample_indices]
+
+    # --- 3. Calculate Point Density using Gaussian KDE on the Sampled Data ---
+    data_points = np.vstack([x_sample, y_sample])
+    kde = gaussian_kde(data_points)
+    density_values = kde(data_points)
+
+    # --- 4. Sort Points by Density for Better Visualization ---
+    sort_indices = density_values.argsort()
+    x_sorted = x_sample[sort_indices]
+    y_sorted = y_sample[sort_indices]
+    density_sorted = density_values[sort_indices]
+
+    # --- 5. Create the Plot ---
+    fig, ax = plt.subplots(figsize=(12, 12))
+
+    scatter = ax.scatter(x_sorted, y_sorted,
+                         c=density_sorted,
+                         cmap='plasma',
+                         s=25,
+                         alpha=0.6)
+
+    # Add a color bar and increase its label font size. Shrink the color bar for a better fit.
+    cbar = fig.colorbar(scatter, ax=ax, shrink=0.8)
+    cbar.set_label('Point Density', fontsize=22)
+
+    # --- 6. Add the y=x Reference Line ---
+    if simetric:
+        x_mean = x_flat.mean()
+        y_mean = y_flat.mean()
+        x_std = x_flat.std()
+        y_std = y_flat.std()
+        min_val = min(x_mean - 5*x_std, y_mean - 5* y_std)
+        max_val = max(x_mean + 5*x_std, y_mean + 5* y_std)
+        line_vals = np.linspace(min_val, max_val, 100)
+        ax.plot(line_vals, line_vals,
+                color='gray',
+                linestyle='--',
+                linewidth=2,
+                label='y=x Reference Line')
+        # Set the common axis limits for a square frame
+        ax.set_xlim(min_val, max_val)
+        ax.set_ylim(min_val, max_val)
+        ax.set_aspect('equal', adjustable='box')
+    else:
+        ax.set_xlim(0, np.median(x_flat))
+        ax.set_ylim(0, np.median(y_flat))
+
+    # --- 7. Set Plot Labels, Title, and Legend with increased font sizes ---
+    ax.set_xlabel(xlabel, fontsize=22)
+    ax.set_ylabel(ylabel, fontsize=22)
+    ax.set_title(title, fontsize=20)
+    ax.legend(fontsize=12)
+
+    # Increase the font size of the tick labels on both axes and add minor ticks
+    ax.tick_params(axis='both', which='major', labelsize=22)
+    ax.xaxis.set_minor_locator(AutoMinorLocator())
+    ax.yaxis.set_minor_locator(AutoMinorLocator())
+
+    # Ensure the plot area is square
+    
+    # Set the font to Times New Roman
+    plt.rcParams['font.family'] = 'serif'
+    plt.rcParams['font.serif'] = ['Times New Roman', 'DejaVu Serif', 'Computer Modern Roman', 'Liberation Serif', 'Bitstream Vera Serif']
+
+    plt.tight_layout()
+
+    # --- 8. Save or Show the Plot ---
+    if save_path:
+        plt.savefig(save_path)
+        print(f"Plot saved successfully to '{save_path}'")
+    else:
+        plt.show()
+        
+        
+        
+def plot_line_in_domain(target, output, save_path="line_quarters", along="z"):
+    """
+    Plots the fluid prevision and target lines at the center of four domain quarters.
+    
+    Args:
+        target (np.ndarray): The 3D numpy array representing the target fluid data.
+        output (np.ndarray): The 3D numpy array representing the predicted fluid data.
+        save_path (str): The base path to save the output image.
+        along (str): The axis to plot along ('z', 'x', or 'y').
+    """
+    # Define a modern, professional color palette
+    colors = {
+        'predicted': '#1f77b4',  # A nice blue
+        'actual': '#ff7f0e',     # A nice orange
+        'grid': '#cccccc',       # A light grey for the grid
+        'background': '#f5f5f5'  # A very light grey background
+    }
+    
+    # Get the dimensions of the domain
+    dim_z, dim_y, dim_x = target.shape
+
+    # Define the coordinates for the center of each of the four quarters
+    quarter_coordinates = [
+        (dim_y // 4, dim_x // 4),
+        (dim_y // 4, 3 * dim_x // 4),
+        (3 * dim_y // 4, dim_x // 4),
+        (3 * dim_y // 4, 3 * dim_x // 4)
+    ]
+    
+    # Define titles for each subplot
+    quarter_titles = [
+        'Top-Left Quarter',
+        'Top-Right Quarter',
+        'Bottom-Left Quarter',
+        'Bottom-Right Quarter'
+    ]
+
+    # Set a professional plot style
+    plt.style.use('seaborn-v0_8-whitegrid')
+    
+    # Create the figure with a 2x2 grid of subplots
+    fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(15, 12))
+    
+    # Set the background color for the figure
+    fig.patch.set_facecolor(colors['background'])
+    
+    # Add a main title for the entire figure
+    fig.suptitle(
+        'Fluid Prevision vs. Actual Fluid in Four Domain Quarters',
+        fontsize=22,
+        fontweight='bold',
+        y=0.95  # Adjusts vertical position of the title
+    )
+    
+    # Flatten the axes array for easy iteration
+    axes_flat = axes.flatten()
+
+    # Loop through each subplot and plot the data
+    for i, ax in enumerate(axes_flat):
+        q_y, q_x = quarter_coordinates[i]
+        
+        # Extract data based on the plotting axis
+        if along == "z":
+            predicted_data = output[:, q_y, q_x]
+            target_data = target[:, q_y, q_x]
+            time_steps = np.arange(dim_z)
+            ax.set_xlabel(f"{along}-axis (X-dimension)", fontsize=12)
+        elif along == "x":
+            predicted_data = output[dim_z // 2, q_y, :]
+            target_data = target[dim_z // 2, q_y, :]
+            time_steps = np.arange(dim_x)
+            ax.set_xlabel(f"{along}-axis (X-dimension)", fontsize=12)
+        else: # along == "y"
+            predicted_data = output[dim_z // 2, :, q_x]
+            target_data = target[dim_z // 2, :, q_x]
+            time_steps = np.arange(dim_y)
+            ax.set_xlabel(f"{along}-axis (X-dimension)", fontsize=12)
+
+        # Plot the target and predicted data
+        ax.plot(
+            time_steps, target_data, 
+            color=colors['actual'], 
+            linestyle='--', 
+            linewidth=3, 
+            label='Target'
+        )
+        ax.plot(
+            time_steps, predicted_data, 
+            color=colors['predicted'], 
+            linestyle='-', 
+            linewidth=3, 
+            label='Predicted'
         )
         
+        # Set subplot title and labels
+        ax.set_title(quarter_titles[i], fontsize=16, pad=10)
+        ax.set_ylabel('Fluid Value', fontsize=12)
+        
+        # Customize the appearance of each subplot
+        ax.set_facecolor('white')
+        ax.legend(loc='best', frameon=False, fontsize=10)
+        ax.grid(True, which='both', linestyle=':', linewidth=0.5, color=colors['grid'], alpha=0.7)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_linewidth(1.5)
+        ax.spines['bottom'].set_linewidth(1.5)
+        ax.tick_params(axis='both', which='major', labelsize=10)
 
-    # Labels and title with increased font size
-    plt.xlabel('Value', fontsize=14)
-    plt.ylabel('Density', fontsize=14)
-    plt.title(title, fontsize=16)
-
-    # Increase tick font sizes
-    plt.xticks(fontsize=12)
-    plt.yticks(fontsize=12)
-
-    # Legend and grid
-    plt.legend(fontsize=12)
+    # Adjust layout to prevent overlap
+    plt.tight_layout(rect=[0, 0, 1, 0.96]) # Adjust rect to make space for suptitle
     
-    # Enable minor ticks and set their frequency
-    ax.minorticks_on()
-    ax.xaxis.set_minor_locator(AutoMinorLocator(n=2))
-    ax.yaxis.set_minor_locator(AutoMinorLocator(n=2))
-    ax.grid(which='both', linestyle='--', linewidth=0.5, alpha=0.7)
-
-    # Save
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    plt.savefig(save_path + ".png", bbox_inches='tight')
+    # Ensure the directory exists before saving
+    os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
+    
+    # Save the figure with a high DPI for high-quality output
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.show()
-
-
-def plot_joint_frequency(distance_transform, velocity, cmap='plasma',
-                         title="Joint Frequency", xaxis="Distance", yaxis="Velocity", save_path="./plot.svg"):
-    # Flatten input arrays
-    dist_flat = distance_transform.flatten()
-    vel_flat = velocity.flatten()
-
-    if len(dist_flat) != len(vel_flat):
-        raise ValueError("Input arrays must have the same number of elements")
-
-    # Define number of bins
-    bins = int(np.ceil(np.log2(len(vel_flat)) + 1))
     
-    # Define fixed bin edges (uniform)
-    xedges = np.linspace(dist_flat.min(), dist_flat.max(), bins + 1)
-    yedges = np.linspace(vel_flat.min(), vel_flat.max(), bins + 1)
-    
-    # Compute histogram
-    hist, _, _ = np.histogram2d(dist_flat, vel_flat, bins=[xedges, yedges])
-    
-    # Normalize the histogram to represent percentages [0-100%]
-    total_occurrences = len(dist_flat)
-    hist_percentage = (hist / total_occurrences) * 100.0
-    
-    # Handle zero values for visualization
-    hist_percentage = np.where(hist_percentage == 0, 1e-10, hist_percentage)
-
-    # Create a single plot with a color bar
-    fig, ax = plt.subplots(figsize=(10, 8))
-
-    # Main heatmap
-    extent = [xedges[0], xedges[-1], yedges[0], yedges[-1]]
-    mesh = ax.imshow(hist_percentage.T, origin='lower', extent=extent,
-                     aspect='auto', cmap=cmap)
-    
-    # Colorbar
-    cbar = plt.colorbar(mesh, ax=ax, pad=0.05)
-    cbar.set_label('Frequency (%)', rotation=270, labelpad=20, fontsize=14)
-    cbar.ax.tick_params(labelsize=12)
-
-    # Axes labels and title
-    ax.set_xlabel(xaxis, labelpad=10, fontsize=14)
-    ax.set_ylabel(yaxis, labelpad=10, fontsize=14)
-    ax.set_title(title, fontsize=16)
-    ax.tick_params(axis='both', labelsize=12)
-    ax.grid(True, alpha=0.3)
-    
-    # Save and show
-    plt.savefig(save_path + ".png", bbox_inches='tight')
-    plt.show()
-

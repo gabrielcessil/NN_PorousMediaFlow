@@ -7,10 +7,12 @@ from torch.utils.data._utils.collate import default_collate
 
 no_collate=lambda batch: batch
 
-def compute_loader_outputs(model, loader, N_Samples, batch_size=1, shuffle=False):
+def compute_loader_outputs(model, loader, N_Samples=None, shuffle=False):
     model.eval()
+    if N_Samples is None: N_Samples = len(loader)
+    
     subset      = Subset(loader.dataset, range(N_Samples))    
-    new_loader  = DataLoader(subset, batch_size=batch_size, shuffle=shuffle)
+    new_loader  = DataLoader(subset, batch_size=1, shuffle=shuffle)
 
     outputs = []
     with torch.no_grad():
@@ -22,7 +24,7 @@ def compute_loader_outputs(model, loader, N_Samples, batch_size=1, shuffle=False
 
 class Data_Loader(Dataset):
     
-    def __init__(self, inputs_tensor, outputs_tensor, batch_size, shuffle=False):
+    def __init__(self, inputs_tensor, outputs_tensor, batch_size=None, shuffle=False):
         
         self.inputs, self.outputs = inputs_tensor, outputs_tensor
         self.batch_size = batch_size if batch_size is not None else len(self)

@@ -20,10 +20,8 @@ class MultiScaleDataset(Dataset):
 
     def __getitem__(self, idx):
         input_tensor, target_tensor = self.base_dataset[idx]
-
-        input_scales = self.get_coarsened_list(input_tensor, num_scales=self.num_scales)
-        target_scales = self.get_coarsened_list(target_tensor, num_scales=self.num_scales)
-        
+        input_scales    = self.get_coarsened_list(input_tensor, num_scales=self.num_scales)
+        target_scales   = self.get_coarsened_list(target_tensor, num_scales=self.num_scales)
         return input_scales, target_scales
     
     def get_coarsened_list(self, x, num_scales):    
@@ -59,7 +57,7 @@ class MultiScaleDataset(Dataset):
         
 
     @staticmethod
-    def get_dataloader(scaled_data, batch_size, verbose=False):
+    def get_dataloader(scaled_data, batch_size=None, verbose=False):
         # Divide list of pairs into array of N inputs and array of N targets
         scaled_input_tensors    = []
         scaled_output_tensors   = []

@@ -33,10 +33,10 @@ class Mask_LossFunction(nn.Module):
     # Do not consider cells with 0 value  
     # The loss function used must be a mean across the tensor lenght, 
     # so that the quantity of solid cells do not affect the loss
-    def _default_mask_law(self,output, target, threshold=0.0001): 
-        
+    def _default_mask_law(self,output, target, threshold=0): 
         # Mask consider only target != 0, i.e, non-solid cells
-        mask = (target > threshold) | (target < -threshold)
+        #mask = (target > threshold) | (target < -threshold)
+        mask = torch.abs(target) > threshold
         return mask
     
     def forward(self, output, target):
@@ -55,25 +55,7 @@ class Mask_LossFunction(nn.Module):
 #######################################################
 #************ LOSS FUNCTIONS  ************************#
 #######################################################
-
-
-class CustomLoss_Accuracy(nn.Module):
-    def __init__(self):
-        super(CustomLoss_Accuracy, self).__init__()
-        self.accuracy = Accuracy(task="binary")  # Use "multiclass" for multiple classes
-
-    def forward(self, output, target):
-        if output.size() != target.size():
-            raise ValueError(f"CustomLoss_Accuracy forward: Tensors have different sizes ({output.size()} vs {target.size()})")
-
-        # Convert probabilities/logits to binary values
-        preds = (output > 0.5).int()
-        target = target.int()  # Ensure target is also in integer format
-
-        acc = self.accuracy(preds, target)
-        return 1 - acc  # Convert accuracy to a loss (lower is better)
     
-
 class Custom_BCE(nn.Module):
     def __init__(self):
         super(Custom_BCE, self).__init__()
@@ -92,66 +74,7 @@ class Custom_BCE(nn.Module):
         
         return self.bce(output, target)
     
-class CustomLoss_MIOU(nn.Module):
-    def __init__(self):
-        super(CustomLoss_MIOU, self).__init__()
-        self.miou = MeanIoU(num_classes=2)
-        
-    def forward(self, output, target):
-        if output.size() != target.size():
-            raise ValueError(f"CustomLoss_MIOU forward: Tensors have different sizes ({output.size()} vs {target.size()})")
-        
-        target = (target>0.5).int()
-        
-        self.miou.update(output, target)
-        result = self.miou.compute()
-        self.miou.reset()
-        return  1 - result
-
-class CustomLoss_IOU(nn.Module):
-    
-    # Based on: Using Intersection over Union loss to improve Binary Image Segmentation
-    # Link: https://fse.studenttheses.ub.rug.nl/18139/1/AI_BA_2018_FlorisvanBeers.pdf
-    # Resource: https://www.youtube.com/watch?v=NqDBvUPD9jg
-    def __init__(self):
-        super(CustomLoss_IOU, self).__init__()
-        
-    def forward(self, output, target):
-        if output.size() != target.size():
-            raise ValueError(f"CustomLoss_MIOU forward: Tensors have different sizes ({output.size()} vs {target.size()})")
-        
-        
-        # Flatten the tensors
-        T = target.flatten().float()
-        P = output.flatten().float()
-
-        # Ensure both tensors are floating point type for accurate calculations
-        T = T.float()
-        P = P.float()
-
-        # Calculate the intersection
-        intersection = torch.sum(T * P)
-        union = torch.sum(T) + torch.sum(P) - intersection
-
-        # Calculate the IOU
-        result = (intersection + 1.0) / (union + 1.0)
-
-        return 1 - result
-
 # MY COMPOSED FUNCTIONS
-
-class PixelWisePercentualError(nn.Module):
-    def __init__(self, eps=1e-8):
-        super(PixelWisePercentualError, self).__init__()
-        self.eps = eps
-
-    def forward(self, output, target):
-        if output.size() != target.size():
-            raise ValueError(f"Shape mismatch: {output.size()} vs {target.size()}")
-        
-        # Compute per-pixel relative error
-        l1_error = 100*(torch.abs(output - target)).mean() / (torch.abs(target)).mean()
-        return l1_error
     
 class Cosine(nn.Module):
     def __init__(self, eps=1e-8):
@@ -218,11 +141,43 @@ class MeanOutputError(nn.Module):
         if output.shape != target.shape:
             raise ValueError(f"Shape mismatch: {output.shape} vs {target.shape}")
             
-        mean_error = output.mean() - target.mean()
-        
+        mean_error = ( (output.mean() - target.mean())/target.mean() ).abs()
         return mean_error
         
+class MeanPixelWiseRelativeError(nn.Module):
+    """
+    Computes the Mean Pixel-wise Relative Error (P-REL) Loss.
+    
+    This loss function is particularly useful for regression tasks where the
+    magnitude of the target values varies significantly, such as depth
+    estimation. It penalizes errors based on their proportion to the
+    ground truth value, making it scale-invariant.
+    
+    Args:
+        eps (float): A small value added to the denominator to prevent
+                     division by zero when target pixel values are zero.
+    """
+    def __init__(self, eps=1e-8):
+        super(MeanPixelWiseRelativeError, self).__init__()
+        self.eps = eps
+
+    def forward(self, output, target):
+        """
+        Calculates the per-pixel relative error and averages it.
+
+        Args:
+            output (torch.Tensor): The predicted tensor, e.g., an image or depth map.
+            target (torch.Tensor): The ground truth tensor of the same shape.
+
+        Returns:
+            torch.Tensor: The mean pixel-wise relative error loss.
+        """
+        # Ensure the output and target tensors have the same shape.
+        if output.size() != target.size():
+            raise ValueError(f"Shape mismatch: {output.size()} vs {target.size()}")    
         
+        return (torch.abs(output - target) / (target.abs() + self.eps)).mean()
+    
     
 class MultiScaleLoss(nn.Module):
     # 'normalize_mode' can be : 
@@ -254,7 +209,6 @@ class MultiScaleLoss(nn.Module):
             raise TypeError(f"Expected y to be list or tuple, got {type(y)}")
         if len(y_pred) != len(y):
             raise ValueError(f"Mismatch in number of scales: {len(y_pred)} predictions vs {len(y)} targets")
-
         
         total_loss = 0
         y_var = y[-1].var()
@@ -263,54 +217,15 @@ class MultiScaleLoss(nn.Module):
             if y_hats.shape != y_trues.shape:
                 raise ValueError(f"Shape mismatch at scale {scale}: {y_hats.shape} vs {y_trues.shape}")
             
-            
+            # Get the scaled image loss, then include it to the total
             loss_scale = self.loss_fn(y_hats, y_trues) # n_voxels added by Gabriel C. Silveira
             total_loss += loss_scale # The total loss is the sum of each scale loss
             
-        if self.norm == 'none': return total_loss
-        elif self.norm == 'n_scales': return total_loss/len(y)
-        elif self.norm == 'var': return total_loss/y_var
+        if self.norm    == 'none':      return total_loss
+        elif self.norm  == 'n_scales':  return total_loss/len(y)
+        elif self.norm  == 'var':       return total_loss/y_var
         else:
             raise ValueError(f"normalize_mode '{self.norm}' not implemented. Use one of 'none'(default), 'n_scales, 'var'.")
-    
-    
-    
-
-
-"""
-class MSE_VarNormalized(nn.Module):
-    def __init__(self):
-        super(MSE_VarNormalized, self).__init__()
-
-    def forward(self, pred: torch.Tensor, target: torch.Tensor):
-        if pred.shape != target.shape:
-            raise ValueError(f"Shape mismatch: {pred.shape} vs {target.shape}")
-        
-        # Compute spatial variance of the ground truth (per-sample, per-channel)
-        B = target.shape[0] # Batch size
-        C = target.shape[1] # Number of channels 
-        
-        # Flatten spatial dimensions, keeping batch and channel dimensions
-        # Shape: [B, C, H, W, D] -> [B, C, H*W*D]
-        pred_flat = pred.view(B, C, -1)
-        target_flat = target.view(B, C, -1)
-
-        # Calculate variance for each channel within each sample
-        # var_target will have shape [B, C]
-        var_target = target_flat.var(dim=2, unbiased=False) 
-        
-        # Calculate MSE for each channel within each sample
-        # sample_mse will have shape [B, C]
-        sample_mse = ((pred_flat - target_flat) ** 2).mean(dim=2)
-
-        # Normalize MSE by variance for each channel and each sample
-        # sample_norm_mse will have shape [B, C]
-        sample_norm_mse = sample_mse / var_target 
-        
-        # Return the mean of the normalized MSEs over the batch and channels
-        # Result is a single scalar value
-        return sample_norm_mse.mean()
-"""
     
     
 

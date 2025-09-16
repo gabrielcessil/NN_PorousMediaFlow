@@ -9,7 +9,7 @@ import json
 from Utilities import usage_metrics as um
 from Utilities import plotter
 import time
-
+import random
 
 # valid_loss_functions: dict of loss functions, where the key identify them
 # train_loss_function: must be the name of the loss function used as key inside valid_loss_functions
@@ -26,7 +26,7 @@ def full_train(model,
                results_folder = "",
                device="cpu",
                saving_dec_perc=10):
-        
+
     # Make sure to use same device
     model.to(device)
     
@@ -53,7 +53,8 @@ def full_train(model,
             loss_function       = loss_functions[backPropagation_loss], 
             optimizer           = optimizer,
             scheduler           = scheduler,
-            device              = device)
+            device              = device
+        )
         
         # Get learning metrics
         train_avg_loss, valid_avg_loss = validate_one_epoch(
@@ -63,34 +64,40 @@ def full_train(model,
                                               loss_functions= loss_functions,
                                               device        = device)
         
+        # Tracking performance
         train_costs_history.append(train_avg_loss)
         val_costs_history.append(valid_avg_loss)
         epoch_timestamp_stop    = time.perf_counter()
         diff                    = (epoch_timestamp_stop - epoch_timestamp_start)
         average_computation     += (diff - average_computation) / (epoch_index + 1)
         
-        # Save tracking based on best performance. If it is monotonic: will save every step (disc access)
-        
-        if valid_avg_loss[earlyStopping_loss] < best_valid_loss:
-            percent = round((1-(valid_avg_loss[earlyStopping_loss] / best_valid_loss)) * 100, 2)  # Calcula o percentual relativo
-            print(f"New best solution achieved at {epoch_index} / {N_epochs} ({percent:.1f}% better)")
-            best_valid_loss = valid_avg_loss[earlyStopping_loss]
-            best_model      = model.state_dict() # Temporarilly saves best model (RAM)
+
             
 
         # Save tracking based on % of epochs
         if epoch_index in progress_points:
+            # Make tracking prints
             percent = round((epoch_index / N_epochs) * 100, 2)  # Calcula o percentual relativo
-            
             print(f"\nExecuting epoch {epoch_index} / {N_epochs} ({percent:.1f}%)")
             print("--> Allocated memory {} (MB) ".format(round(um.get_memory_usage())))
             print("--> Average epoch processing time (seconds): ", round(average_computation,6))
-            
+            print(f"--> Back-Propagated Loss for trainning vs validation data: {train_avg_loss[backPropagation_loss]}, {valid_avg_loss[backPropagation_loss]}")
+            # Save model
             model_path = weights_file_name+"_ProgressTracking_{}.pth".format(round((epoch_index / N_epochs) * 100))
+            model_dir = os.path.dirname(weights_file_name)
+            if model_dir: os.makedirs(model_dir, exist_ok=True)
             torch.save(model.state_dict(), model_path)
             model_paths.append(model_path)
+            # Plot loss 
             Plot_LossHistory(train_costs_history, val_costs_history, output_path=f"{results_folder}LossHistory.png")
-     
+            
+        # Save tracking based on best performance
+        if valid_avg_loss[earlyStopping_loss] < best_valid_loss:
+            percent = round((1-(valid_avg_loss[earlyStopping_loss] / best_valid_loss)) * 100, 2)  # Calcula o percentual relativo
+            best_valid_loss = valid_avg_loss[earlyStopping_loss]
+            best_model      = model.state_dict() # Temporarilly saves best model (RAM)
+            print(f"--> New best solution for Validation dataset achieved at {epoch_index} / {N_epochs}: {best_valid_loss} ({percent:.6f}% better)")
+            
     # Saves on disc the best model (once after trainning)
     model_paths.append(best_model_path)
     torch.save(best_model, best_model_path)
@@ -113,6 +120,18 @@ def full_train(model,
     """
     return best_model, model_paths
 
+
+def set_seed(seed=None):
+    if seed is not None:
+        # Set seed for CPU
+        torch.manual_seed(seed)
+        # Set seed for all available GPUs
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        # Set seeds for other libraries
+        np.random.seed(seed)
+        random.seed(seed)
+    
 # Move tensors to device
 # If obj is a list, move each element to device
 def move_to_device(obj, device):
@@ -138,7 +157,7 @@ def train_one_epoch(model, train_batch_loader, loss_function, optimizer, schedul
             
             optimizer.zero_grad() # Reinicia os gradientes para calculo do passo dos pesos
             batch_outputs   = model(batch_inputs) # Calcula Saídas
-            loss = loss_function["obj"](batch_outputs, batch_targets) # Calcula Custo
+            loss            = loss_function["obj"](batch_outputs, batch_targets) # Calcula Custo
             loss.backward() # Calcula gradiente em relacao ao Custo
             optimizer.step()
         
@@ -239,6 +258,9 @@ def Plot_LossHistory(train_cost_history, val_cost_history, normalize=False, outp
             train_loss_history = scale(train_loss_history)
             valid_loss_history = scale(valid_loss_history)
         
+        loss_difference = np.array(valid_loss_history) - np.array(train_loss_history)
+
+
         # Plot 1: Full cost history
         x = range(len(train_cost_history))
         axes[idx, 0].plot(x, train_loss_history, label='train', color='blue')
@@ -253,9 +275,14 @@ def Plot_LossHistory(train_cost_history, val_cost_history, normalize=False, outp
         if len(train_loss_history) > 10: # Ensure there's enough data
             axes[idx, 1].plot(x[-10:], train_loss_history[-10:], label='train', color='blue')
             axes[idx, 1].plot(x[-10:], valid_loss_history[-10:], label='validation', color='red')
+            
+            axes[idx, 2].plot(x[-10:], loss_difference[-10:], label='Validation - Train', color='black')
+            
         else:
-            axes[idx, 1].plot(x[-len(train_loss_history):], train_loss_history[-10:], label='train', color='blue')
-            axes[idx, 1].plot(x[-len(train_loss_history):], valid_loss_history[-10:], label='validation', color='red')
+            axes[idx, 1].plot(x[-len(train_loss_history):], train_loss_history[-len(train_loss_history):], label='train', color='blue')
+            axes[idx, 1].plot(x[-len(train_loss_history):], valid_loss_history[-len(train_loss_history):], label='validation', color='red')            
+            
+            axes[idx, 2].plot(x[-len(train_loss_history):], loss_difference[-len(train_loss_history):], label='Validation - Train', color='black')
             
         axes[idx, 1].set_xlabel('Epochs')
         axes[idx, 1].set_ylabel('Loss')
@@ -263,9 +290,6 @@ def Plot_LossHistory(train_cost_history, val_cost_history, normalize=False, outp
         axes[idx, 1].legend()
         axes[idx, 1].set_ylim(bottom=0.0)
 
-        # Plot 3: Loss difference history
-        loss_difference = np.array(valid_loss_history) - np.array(train_loss_history)
-        axes[idx, 2].plot(x, loss_difference, label='Validation - Train', color='black')
         axes[idx, 2].set_xlabel('Epochs')
         axes[idx, 2].set_ylabel('Validation Loss - Train Loss')
         axes[idx, 2].set_title(f'Loss difference History ({loss_name})')
@@ -327,6 +351,57 @@ def Plot_DataloaderBatch(dataloader, num_images=5):
 #************ METADATA HANDLERS **********************#
 #######################################################
 
+import os
+from datetime import datetime
+
+def create_training_data_folder(base_dir: str = None):
+    """
+    Creates a new folder inside the given base directory with a specific name.
+
+    The folder name is formatted as:
+    'NN_Trainning_Day_Month_Year_HourMinuteAMPM'
+
+    For example: 'NN_Trainning_4_August_2025_6-30PM'
+
+    Args:
+        base_dir (str, optional): The directory in which to create the folder.
+                                  Defaults to the current working directory.
+
+    Returns:
+        str: The absolute path to the newly created folder, or None if creation failed.
+    """
+    # Use current working directory if base_dir not provided
+    if base_dir is None:
+        base_dir = os.getcwd()
+
+    # Resolve to absolute path (handles "../", "./", etc.)
+    base_dir = os.path.abspath(base_dir)
+
+    # Ensure the base directory exists
+    os.makedirs(base_dir, exist_ok=True)
+
+    # Get the current date and time
+    now = datetime.now()
+
+    # Format the date string as 'Day_Month_Year_HourMinuteAMPM'
+    # %I = 12-hour clock, %M = minutes, %p = AM/PM
+    date_str = now.strftime(f"{now.day}_%B_%Y_%I:%M%p")
+
+    # Construct the full folder name
+    folder_name = f"NN_Trainning_{date_str}"
+
+    # Create the full path for the new folder
+    new_folder_path = os.path.join(base_dir, folder_name)
+
+    try:
+        os.makedirs(new_folder_path, exist_ok=True)
+        return new_folder_path+"/"
+    except OSError as error:
+        print(f"Error creating folder: {error}")
+        return None
+
+
+    
 def save_training_metadata(filename, data):
 
     # Ensure the filename has the .json extension

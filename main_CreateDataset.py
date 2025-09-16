@@ -16,8 +16,9 @@ import DannyData
 #######################################################
 
 # Model Aspects
-dataset_name    = "JavierSantos_Bentheimer"
-#datapath        = "/home/gabriel/Desktop/Dissertacao/Simulations/Javier/Javier_TrainningData/"
+#dataset_name    = "JavierSantos_FinneySpherePack_11092025_1Pressure"
+#datapath        = "/home/gabriel/Desktop/Dissertacao/Simulations_Data/Javier/Javier_TrainningData/"
+dataset_name    = "JavierSantos_Bentheimer_11092025_1Pressure"
 datapath        = "/home/gabriel/Desktop/Dissertacao/Simulations_Data/Javier/Javier_ValidationData/"
 
 num_scales = 4
@@ -31,7 +32,7 @@ with open("config.json" , "r") as json_file:
     config_loaded = json.load(json_file)
 NN_dataset_folder = config_loaded["NN_dataset_folder"]
 dataset_full_name = NN_dataset_folder+dataset_name
-images_full_name = NN_dataset_folder+"/"+dataset_name+"_Images/"
+images_full_name  = NN_dataset_folder+"/"+dataset_name+"_Images/"
 
 
 
@@ -40,25 +41,18 @@ images_full_name = NN_dataset_folder+"/"+dataset_name+"_Images/"
 #************ LOADING ROCK EXAMPLE *******************#
 #######################################################
 # Use a custom class to handle different data sources
-dataset = JavierData.Lazy_RockDataset(datapath)
+dataset_lazy = JavierData.Lazy_RockDataset(datapath)
 print("Rock and Simulation collected.")
 
 # Make a multiscale dataset for multiscale architecture
-scaled_dataset = dr.MultiScaleDataset(dataset, num_scales=num_scales)
+scaled_dataset = dr.MultiScaleDataset(dataset_lazy, num_scales=num_scales)
 print("Dataset created.")
 
-# Save dataset
 response = input(f"Confirm that you are dealing with {datapath} to create dataset {dataset_name} [Y/N]: ").strip().lower()
 if response not in ['yes', 'y', 'Y']:
     print("Operation cancelled.")
     sys.exit(1)
 
-#######################################################
-#************ VISUALIZATION **************************#
-#######################################################
-
-# Visualization (optional)
-#dataloader = DataLoader(scaled_dataset, batch_size=1, shuffle=False)
 
 buffer      = []
 buffer_size = None
@@ -67,7 +61,7 @@ buffer_size = None
 for i in range(len(scaled_dataset)):
     print(f"\n Catching item {i}/{len(scaled_dataset)}")
     # GET DATA Path (for plotting and errors tracking only)
-    name1, _    = dataset.paths[i]
+    name1, _    = dataset_lazy.paths[i]
     name1       = name1.strip("'").split('/')[-1].replace('.mat', '')    
     try:
         input_scales, target_scales = scaled_dataset[i]
@@ -91,23 +85,5 @@ for i in range(len(scaled_dataset)):
     except Exception as e:
         print(f"Error getting item {i} ({name1}) from dataset : {e}")
 
-
-
-
-    """
-    # VISUALIZATION
-    # Get the highest resolution tensors from the end of each scale list
-    input_tensor, target_tensor = input_scales[-1], target_scales[-1]
-    # Each has shape: (1, 1, D, H, W) → remove batch & channel dims for plotting
-    input_tensor                = input_tensor[-1].squeeze(0).squeeze(0)
-    target_tensor               = target_tensor[-1].squeeze(0).squeeze(0) # Make it 
-    input_np                    = input_tensor.detach().cpu().numpy()
-    target_np                   = target_tensor.detach().cpu().numpy()
-    plt.plot_heatmap(input_np[:, :, 0],   title=f"input_{name1}", output_file=f"{images_full_name}{name1}_input")
-    plt.plot_heatmap(target_np[:, :, 0],  title=f"target_{name1}", output_file=f"{images_full_name}{name1}_target")
-    plt.Plot_Domain((~(target_np == 0.0)).astype(float), filename=f"{images_full_name}{name1}_3Drock", remove_value=[1.0])
-    plt.Plot_Domain(target_np, filename=f"{images_full_name}{name1}_3Dtarget")
-    """
-    
 if buffer:
     torch.save(buffer, f"{dataset_full_name}.pt")

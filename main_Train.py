@@ -2,14 +2,18 @@ import numpy as np
 import torch.nn as nn
 import json
 import torch
+import os
 
 import Domain_Plotter as plt
 from Utilities import loader_handler as lc
 from Utilities import loss_functions as lf
 from Utilities import nn_trainner as nnt
 from Utilities import model_handler as mh
+from Utilities import dataset_reader as dr
+from Architectures import Models
 
-from network import MS_Net
+
+
 
 
 #######################################################
@@ -17,84 +21,135 @@ from network import MS_Net
 #######################################################
 
 # Model Aspects
-model_name      = "Model_Javier_Data_JavierSpherePacks" # The desired model name, avoid overwritting previous models
-num_scales      = 4                                     # MS-Net paper use 4.
+model_name              = "Simple_Test_myCPU_SDG"#"Model_Javier_Data_JavierSpherePacks" # The desired model name, avoid overwritting previous models
+num_scales              = 4                                     # MS-Net paper use 4.
 
 # Data aspects
-dataset_name    = "JavierSantos_FinneySpherePack.pt"
-max_samples     = None  # Total samples loaded: None (default)=All
-batch_size      = 1     # Group size of train samples that influence one update on weights
-val_ratio       = None  # Fraction of max_samples used to validate (None=no splitting)
-train_ratio     = None  # Fraction of max_samples used to train (None=no splitting)
+NN_dataset_folder       = "../NN_Datasets/"
+dataset_train_name      = "JavierSantos_FinneySpherePack_11092025_1Pressure.pt"
+dataset_validation_name = "JavierSantos_Bentheimer_11092025_1Pressure.pt"
+max_samples             = None      # Total samples loaded: None (default)=All
+batch_size              = None      # Group size of train samples that influence one update on weights
 
 # Learning aspects
-N_epochs        = 50    # Number of times that all the samples are visited
-learning_rate   = 0.0001 # Originally 0.001
+N_epochs                = 50        # Number of times that all the samples are visited
+learning_rate           = 0.00005     # Originally 0.001
 loss_functions  = {
-    "MS_MSE":           {"obj": lf.MultiScaleLoss(nn.MSELoss()),                    "Thresholded": False},
-    "MS_MSE_VarNorm":   {"obj": lf.MultiScaleLoss(nn.MSELoss(), norm_mode='var'),   "Thresholded": False},
-    "MS_PixelWise":     {"obj": lf.MultiScaleLoss(lf.PixelWisePercentualError()),   "Thresholded": False},
-    "Mean_output":      {"obj": lf.MultiScaleLoss(lf.MeanOutputError()),            "Thresholded": False}
+    "MS_MSE":                       {"obj": lf.MultiScaleLoss(nn.MSELoss()),                                            "Thresholded": False},
+    "MS_MSE_VarNorm_inVoid":        {"obj": lf.MultiScaleLoss(lf.Mask_LossFunction(nn.MSELoss()), norm_mode='var'),     "Thresholded": False},
+    "MS_MeanOutputError_inVoid":    {"obj": lf.MultiScaleLoss(lf.Mask_LossFunction(lf.MeanOutputError())),              "Thresholded": False},
+    "MS_MSE_inVoid":                {"obj": lf.MultiScaleLoss(lf.Mask_LossFunction(nn.MSELoss())),                      "Thresholded": False},
+    "MS_MeanPixelWiseRelativeError":{"obj": lf.MultiScaleLoss(lf.Mask_LossFunction(lf.MeanPixelWiseRelativeError())),   "Thresholded": False},
 }
-earlyStopping_loss      = "MS_MSE_VarNorm" # Which listed loss_function is used to stop trainning
-backPropagation_loss    = "MS_MSE_VarNorm" # Which listed loss_function is used to calculate weights
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+earlyStopping_loss      = "MS_MeanOutputError_inVoid"   # Which listed loss_function is used to stop trainning
+backPropagation_loss    = "MS_MeanPixelWiseRelativeError"  # Which listed loss_function is used to calculate weights
+optimizer               = 'ADAM'                        # One of: 'ADAM' or 'SGD' 
+device                  = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+seed                    = 42
+
 #######################################################
 #************ LOADING CONFIGS ************************#
 #######################################################
 
-# LOADING CONFIGS
-with open("config.json" , "r") as json_file:
-    config_loaded = json.load(json_file)
     
-NN_dataset_folder       = config_loaded["NN_dataset_folder"]
-NN_model_weights_folder = config_loaded["NN_model_weights_folder"]
-NN_results              = config_loaded["NN_results"]
+NN_results_folder       = nnt.create_training_data_folder(base_dir="../NN_Results")
+NN_model_weights_folder = NN_results_folder+"NN_Model_Weights/"
 model_full_name         = NN_model_weights_folder+model_name
-dataset_full_name       = NN_dataset_folder+dataset_name
+dataset_train_full_name = NN_dataset_folder+dataset_train_name
+dataset_valid_full_name = NN_dataset_folder+dataset_validation_name
+print(f"Optimizing with: {backPropagation_loss} for {optimizer}")
+print()
+print("Folder created for results: ",NN_results_folder)
+print("Saving model weights in:    ",NN_model_weights_folder)
+print("Model base name:            ",model_name)
+print("Trainning with dataset:     ",dataset_train_full_name)
+print("Validating with dataset:    ",dataset_valid_full_name)
+print()
+print("Max Samples:                ",max_samples)
+print("Batch_size:                 ",batch_size)
+print("N_epochs:                   ",N_epochs)
+print("learning_rate:              ",learning_rate)
+print("optimizer:                  ",optimizer)
+print("device:                     ",device)
+print("seed:                       ",seed)
+print("earlyStopping_loss:         ",earlyStopping_loss)
+print("backPropagation_loss:       ",backPropagation_loss)
+print()
 
+#######################################################
+#************ SAVE METADATA ************************#
+#######################################################
+
+# Defina o caminho onde o arquivo será salvo
+metadata_file = os.path.join(NN_results_folder, "metadata.txt")
+
+# Monte o conteúdo do metadata
+metadata_content = f"""
+================= TRAINING METADATA =================
+
+Model Aspects:
+- model_name: {model_name}
+- num_scales: {num_scales}
+
+Data Aspects:
+- NN_dataset_folder: {NN_dataset_folder}
+- dataset_train_name: {dataset_train_name}
+- dataset_validation_name: {dataset_validation_name}
+- max_samples: {max_samples}
+- batch_size: {batch_size}
+
+Learning Aspects:
+- N_epochs: {N_epochs}
+- learning_rate: {learning_rate}
+- optimizer: {optimizer}
+- earlyStopping_loss: {earlyStopping_loss}
+- backPropagation_loss: {backPropagation_loss}
+
+Loss Functions:
+{json.dumps({k: {"Thresholded": v["Thresholded"], "obj": str(v["obj"])} for k,v in loss_functions.items()}, indent=4)}
+
+Paths:
+- NN_results_folder: {NN_results_folder}
+- NN_model_weights_folder: {NN_model_weights_folder}
+- model_full_name: {model_full_name}
+- dataset_train_full_name: {dataset_train_full_name}
+- dataset_valid_full_name: {dataset_valid_full_name}
+
+======================================================
+"""
+# Escreve no txt
+with open(metadata_file, "w") as f:
+    f.write(metadata_content)
+
+print(f"Metadata saved at: {metadata_file}")
 #######################################################
 #************ LOADING DATA          ******************#
 #######################################################
-print("Loading Data ... ")
-# Load Multiscale Dataset
-scaled_data             = torch.load(dataset_full_name,  weights_only=False)
+# Set seed to random initializations
+nnt.set_seed(seed) # If empty (None) make it random, if integer eliminates randomness
 
+print("Loading Trainning Data ... ")
+# Load Multiscale Dataset for trainning
+scaled_train_data   = torch.load(dataset_train_full_name,  weights_only=False)
+loader_train        = dr.MultiScaleDataset.get_dataloader(scaled_train_data, batch_size)
+loader_train        = loader_train._cut(max_samples)
+del scaled_train_data
 
-# Divide list of pairs into array of N inputs and array of N targets
-scaled_input_tensors    = []
-scaled_output_tensors   = []
-for input_scales, target_scales in scaled_data:
-    scaled_input_tensors.append(input_scales)
-    scaled_output_tensors.append(target_scales)
-del scaled_data
-dataloader = lc.Data_Loader(scaled_input_tensors, scaled_output_tensors, batch_size)
-del scaled_input_tensors
-del scaled_output_tensors
+print("Loading Validation Data ... ")
+# Load Multiscale Dataset for validation
+scaled_valid_data   = torch.load(dataset_valid_full_name,  weights_only=False)
+loader_valid        = dr.MultiScaleDataset.get_dataloader(scaled_valid_data, batch_size)
+loader_valid        = loader_valid._cut(max_samples)
+del scaled_valid_data
 
-# Divide data into train / validation / test (TO BE REPLACED)
-if train_ratio is not None and val_ratio is not None :
-    train_batch_loader, val_loader, test_loader = dataloader.get_splitted(
-        train_ratio = train_ratio,
-        val_ratio   = val_ratio,
-        batch_size  = batch_size,
-        max_samples = max_samples)
-else:
-    dataloader = dataloader._cut(max_samples)
-    train_batch_loader, val_loader, test_loader = dataloader.loader, dataloader.loader, dataloader.loader
-    
-
-dataloader.print_stats(train_batch_loader, val_loader, test_loader)
-del dataloader
 
 #######################################################
 #******************** MODEL **************************#
 #######################################################
 print("Loading Model ... ")
-
-model = MS_Net(
-    num_scales   := num_scales,     # num of trainable convNets
+model = Models.MS_Net(
+    num_scales    = num_scales,     # num of trainable convNets
     num_features  = 1,              # input features (Euclidean distance)
     num_filters   = 2,              # num of kernels on each layer of the finest model (most expensive)
 )
@@ -102,28 +157,35 @@ model = MS_Net(
 #######################################################
 #************ COMPUTATIONS ***************************#
 #######################################################
-print("Starting Train ... ")
+print(f"Starting Train on {device}... \n")
 
 #### MODEL TRAINNING
-#optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
 
+
+if optimizer == 'ADAM': 
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+elif optimizer == 'SGD':
+    optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
+else:
+    raise Exception(f"Optimizer {optimizer} is not implemented.")
+    
 nnt.full_train(
     model,
-    train_batch_loader,
-    val_loader,                    
+    loader_train.loader,
+    loader_valid.loader,                    
     loss_functions,                                      
     earlyStopping_loss,
     backPropagation_loss,
     optimizer,
     N_epochs=N_epochs,
     weights_file_name=model_full_name,
-    results_folder=NN_results,
-    device=device
+    results_folder=NN_results_folder,
+    device=device,
     )
+
+print("Ending Train ... ")
 
 ### DELETE MODEL AFTER USING IT
 mh.delete_model(model)
-del train_batch_loader
-del val_loader
-del test_loader
+del loader_train
+del loader_valid
